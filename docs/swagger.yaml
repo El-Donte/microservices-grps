@@ -1,0 +1,113 @@
+basePath: /
+definitions:
+  domain.AddToCartRequest:
+    properties:
+      count:
+        type: integer
+    type: object
+  domain.CartItemResponse:
+    properties:
+      count:
+        type: integer
+      name:
+        type: string
+      price:
+        type: integer
+      sku:
+        type: integer
+    type: object
+  domain.CartResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/domain.CartItemResponse'
+        type: array
+      total_price:
+        type: integer
+    type: object
+  domain.ErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  title: cart-service
+  version: "1.0"
+paths:
+  /user/{user_id}/cart:
+    get:
+      description: Returns the current contents of the user's cart. Items are sorted
+        by SKU ascending.
+      parameters:
+      - description: User ID (must be > 0)
+        format: int64
+        in: path
+        name: user_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Cart contents retrieved successfully
+          schema:
+            $ref: '#/definitions/domain.CartResponse'
+        "400":
+          description: Invalid user_id (must be > 0)
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+        "404":
+          description: Cart not found or is empty
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+      summary: Get cart contents
+      tags:
+      - cart
+  /user/{user_id}/cart/{sku_id}:
+    post:
+      consumes:
+      - application/json
+      description: Adds a specified item to a specific user's cart. Quantities are
+        summed if the item already exists.
+      parameters:
+      - description: User ID (must be > 0)
+        format: int64
+        in: path
+        name: user_id
+        required: true
+        type: integer
+      - description: Product SKU ID (must be > 0)
+        format: int64
+        in: path
+        name: sku_id
+        required: true
+        type: integer
+      - description: Item count to add
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.AddToCartRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Item added successfully
+        "400":
+          description: Invalid user_id, sku_id, or count (must be > 0)
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+        "412":
+          description: SKU does not exist in product-service
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+      summary: Add item to cart
+      tags:
+      - cart
+swagger: "2.0"

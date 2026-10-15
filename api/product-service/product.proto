@@ -1,0 +1,38 @@
+syntax = "proto3";
+package product;
+option go_package = "github.com/El-Donte/microservices-grps/pkg/api;product";
+
+
+service ProductService {
+  rpc GetProduct(GetProductRequest) returns (GetProductResponse);
+  rpc ListProducts(ListProductsRequest) returns (ListProductsResponse);
+}
+
+message GetProductRequest {
+  uint64 sku = 1;
+}
+
+message GetProductResponse {
+  uint64 sku = 1;
+  string name = 2;
+  int32 price = 3;
+}
+
+message ListProductsRequest {
+  uint32 page = 1;
+  uint32 per_page = 2;
+}
+
+message ListProductsResponse {
+  repeated Product products = 1;
+  uint32 total = 2;
+  uint32 page = 3;
+  uint32 per_page = 4;
+}
+
+message Product {
+  uint64 sku = 1;
+  string name = 2;
+  int32 price = 3;
+}
+
