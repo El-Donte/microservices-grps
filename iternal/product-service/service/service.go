@@ -46,7 +46,7 @@ func (p ProductService) ListProducts(ctx context.Context, request *pbProduct.Lis
 		page = 1
 	}
 	perPage := request.GetPerPage()
-	if perPage <= 0 {
+	if perPage <= 0 || perPage > 100 {
 		perPage = 10
 	}
 

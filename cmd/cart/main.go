@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +27,14 @@ import (
 // @host localhost:8080
 // @BasePath /
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	lis, err := net.Listen("tcp", ":8080")
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+
 	conn, err := grpc.NewClient(
 		"localhost:50051",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -32,36 +42,58 @@ func main() {
 	if err != nil {
 		log.Fatalf("dial product-service: %v", err)
 	}
-	defer conn.Close()
+	defer func(conn *grpc.ClientConn) {
+		err := conn.Close()
+		if err != nil {
+			log.Fatalf("failed to close connection: %v", err)
+		}
+	}(conn)
 
 	pc := client.NewGRPCProductClient(product.NewProductServiceClient(conn))
 	storage := repository.NewRepository()
-	srv := service.NewService(storage, pc)
+	cartService := service.NewCartService(storage, pc)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	httpServer := &http.Server{
-		Addr:    ":8080",
-		Handler: srv.Handler(),
+	if err := serveHTTP(ctx, lis, cartService.Handler()); err != nil {
+		log.Fatal(err)
 	}
+}
+
+func serveHTTP(ctx context.Context, lis net.Listener, handler http.Handler) error {
+	httpServer := &http.Server{
+		Handler:     handler,
+		ReadTimeout: 5 * time.Second,
+	}
+
+	serveDone := make(chan error, 1)
+	defer close(serveDone)
 
 	go func() {
 		log.Println("Starting HTTP server on :8080")
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("http serve: %v", err)
+		if err := httpServer.Serve(lis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveDone <- fmt.Errorf("http serve: %v", err)
 		}
+
+		serveDone <- nil
 	}()
 
-	<-ctx.Done()
-	log.Println("Shutdown signal received, stopping server...")
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			_ = httpServer.Close()
+			log.Fatalf("Server shutdown failed: %v", err)
+		}
 
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Server shutdown failed: %v", err)
+		if err := <-serveDone; err != nil {
+			return err
+		}
+
+		log.Println("Server exited gracefully")
+		return nil
+
+	case err := <-serveDone:
+		return err
 	}
-
-	log.Println("Server exited gracefully")
 }

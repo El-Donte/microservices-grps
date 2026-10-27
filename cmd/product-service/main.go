@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -16,7 +17,10 @@ import (
 )
 
 func main() {
-	listen, err := net.Listen("tcp", ":50051")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
@@ -30,24 +34,38 @@ func main() {
 	}
 	pbProduct.RegisterProductServiceServer(server, productService)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	if err := serveGRPC(ctx, server, lis); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func serveGRPC(ctx context.Context, grpcServer *grpc.Server, lis net.Listener) error {
+	serveDone := make(chan error, 1)
+	defer close(serveDone)
 
 	go func() {
 		log.Printf("Starting gRPC server on %s", ":50051")
-		if err := server.Serve(listen); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			log.Fatalf("gRPC serve error: %v", err)
+		if err := grpcServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			serveDone <- fmt.Errorf("gRPC serve error: %v", err)
 		}
+
+		serveDone <- nil
 	}()
 
-	<-ctx.Done()
-	log.Println("Shutdown signal received, stopping server...")
+	select {
+	case <-ctx.Done():
+		go func() {
+			grpcServer.GracefulStop()
+		}()
 
-	done := make(chan struct{})
-	go func() {
-		server.GracefulStop()
-		close(done)
-	}()
+		if err := <-serveDone; err != nil {
+			return err
+		}
 
-	log.Println("Server exited gracefully")
+		log.Println("Server exited gracefully")
+		return nil
+
+	case err := <-serveDone:
+		return err
+	}
 }

@@ -1,12 +1,15 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/El-Donte/microservices-grps/docs"
 	"github.com/El-Donte/microservices-grps/iternal/cart/client"
@@ -18,23 +21,23 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-type Service struct {
+type CartService struct {
 	repo          *repository.Repository
-	productClient *client.GRPsClient
+	productClient client.ProductClient
 	mux           *http.ServeMux
 }
 
-func NewService(repo *repository.Repository, productClient *client.GRPsClient) *Service {
-	service := &Service{repo: repo, productClient: productClient, mux: http.NewServeMux()}
+func NewCartService(repo *repository.Repository, productClient client.ProductClient) *CartService {
+	service := &CartService{repo: repo, productClient: productClient, mux: http.NewServeMux()}
 	service.routes()
 	return service
 }
 
-func (s *Service) Handler() http.Handler {
+func (s *CartService) Handler() http.Handler {
 	return middleware.LoggingMiddleware(s.mux)
 }
 
-func (s *Service) routes() {
+func (s *CartService) routes() {
 	s.mux.HandleFunc("/user/", s.handleUserCart)
 	s.mux.HandleFunc("/", s.handleRoot)
 
@@ -63,7 +66,7 @@ func (s *Service) routes() {
 // @Failure 400 {object} domain.ErrorResponse "Invalid user_id (must be > 0)"
 // @Failure 404 {object} domain.ErrorResponse "Cart not found or is empty"
 // @Router /user/{user_id}/cart [get]
-func (s *Service) handleUserCart(writer http.ResponseWriter, request *http.Request) {
+func (s *CartService) handleUserCart(writer http.ResponseWriter, request *http.Request) {
 	userId, sku, err := parseCartPath(request.URL.Path)
 	if err != nil {
 		if errors.Is(err, domain.InvalidPath) {
@@ -78,12 +81,12 @@ func (s *Service) handleUserCart(writer http.ResponseWriter, request *http.Reque
 	case request.Method == http.MethodPost:
 		s.addToCart(writer, request, userId, sku)
 	case request.Method == http.MethodGet:
-		s.getCart(writer, userId)
+		s.getCart(writer, request, userId)
 	default:
 		writeError(writer, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
-func (s *Service) handleRoot(w http.ResponseWriter, r *http.Request) {
+func (s *CartService) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -110,12 +113,12 @@ func (s *Service) handleRoot(w http.ResponseWriter, r *http.Request) {
 // @Failure 412 {object} domain.ErrorResponse "SKU does not exist in product-service"
 // @Failure 500 {object} domain.ErrorResponse "Internal server error"
 // @Router /user/{user_id}/cart/{sku_id} [post]
-func (s *Service) addToCart(writer http.ResponseWriter, request *http.Request, userId uint64, sku uint64) {
+func (s *CartService) addToCart(writer http.ResponseWriter, request *http.Request, userId uint64, sku uint64) {
 	var body = domain.AddToCartRequest{}
 
 	if request.Body != nil {
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-			writeError(writer, http.StatusInternalServerError, "invalid request body")
+			writeError(writer, http.StatusBadRequest, "invalid request body")
 			return
 		}
 	}
@@ -152,7 +155,7 @@ func (s *Service) addToCart(writer http.ResponseWriter, request *http.Request, u
 	writer.WriteHeader(http.StatusOK)
 }
 
-func (s *Service) getCart(writer http.ResponseWriter, userId uint64) {
+func (s *CartService) getCart(writer http.ResponseWriter, request *http.Request, userId uint64) {
 	cart, err := s.repo.Get(userId)
 	if err != nil || cart == nil {
 		writeError(writer, http.StatusNotFound, domain.CartNotFound.Error())
@@ -166,6 +169,30 @@ func (s *Service) getCart(writer http.ResponseWriter, userId uint64) {
 
 	items := cart.Items()
 
+	skus := make([]uint64, 0, len(items))
+	counts := make(map[uint64]int32, len(items))
+	for _, it := range items {
+		skus = append(skus, it.SKU)
+		counts[it.SKU] = int32(it.Count)
+	}
+
+	ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
+	defer cancel()
+
+	products, err := s.productClient.FetchProducts(ctx, skus)
+
+	if err != nil {
+		st, ok := status.FromError(err)
+		if ok && st.Code() == codes.NotFound {
+			writeError(writer, http.StatusPreconditionFailed, "product no longer available")
+			return
+		}
+
+		log.Printf("cart: FetchAll(%d): %v", userId, err)
+		writeError(writer, http.StatusInternalServerError, "product-service unavailable")
+		return
+	}
+
 	type itemResponse struct {
 		SKU   int64  `json:"sku"`
 		Name  string `json:"name"`
@@ -173,16 +200,16 @@ func (s *Service) getCart(writer http.ResponseWriter, userId uint64) {
 		Price int32  `json:"price"`
 	}
 
-	respItems := make([]itemResponse, 0, len(items))
+	respItems := make([]itemResponse, 0, len(products))
 	var total uint64
-	for _, it := range items {
+	for _, it := range products {
 		respItems = append(respItems, itemResponse{
 			SKU:   int64(it.SKU),
 			Name:  it.Name,
-			Count: int32(it.Count),
+			Count: counts[it.SKU],
 			Price: int32(it.Price),
 		})
-		total += uint64(it.Price) * uint64(it.Count)
+		total += uint64(it.Price) * uint64(counts[it.SKU])
 	}
 
 	writer.Header().Set("Content-Type", "application/json")

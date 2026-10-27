@@ -41,7 +41,7 @@ func NewProductRepository(path string) (*ProductRepository, error) {
 			return nil, fmt.Errorf("invalid product price for sku: %d", sku)
 		}
 		if product.Name == "" {
-			return nil, fmt.Errorf("invalid product name for sku: %s", sku)
+			return nil, fmt.Errorf("invalid product name for sku: %d", sku)
 		}
 
 		database[sku] = domain.Product{
