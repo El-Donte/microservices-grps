@@ -14,3 +14,23 @@ generate:
 run-all:
 	go run ./cmd/product-service & \
     go run ./cmd/cart
+
+.PHONY: run-cart
+run-cart:
+	go run ./cmd/cart
+
+.PHONY: run-product
+run-product:
+	go run ./cmd/product-service
+
+.PHONY: test
+test:
+	go test ./...
+
+.PHONY: test-race
+test-race:
+	go test -race ./...
+
+.PHONY: test-api
+test-api:
+	go test -v -count=1 -tags=api ./test/
